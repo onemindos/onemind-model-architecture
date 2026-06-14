@@ -242,11 +242,11 @@
   </div>
   <nav id="nav">
     <button data-view="fabric" class="active">◉ The Fabric</button>
+    <button data-view="topology">⊹ Topology</button>
+    <button data-view="saas">⇄ SaaS</button>
     <button data-view="anatomy">⊞ Anatomy</button>
     <button data-view="languages">⟨⟩ Languages</button>
     <button data-view="voice">🎙 Voice</button>
-    <button data-view="topology">⊹ Topology</button>
-    <button data-view="saas">⇄ SaaS</button>
   </nav>
 </header>
 
@@ -287,6 +287,50 @@
     </div>
     <div class="overlay hint">Subjects flow node → core → subscribers. The core never stores routing — the subject IS the address.</div>
   </div>
+</section>
+
+<!-- ============ TOPOLOGY ============ -->
+<section class="view" id="view-topology">
+  <div class="vhead">
+    <div class="kick">Physical reality</div>
+    <h2>Homestead ⇄ Hub ⇄ Office ⇄ Cloud</h2>
+    <p>One logical bus, many physical locations. Each site runs a leaf node with embedded NATS — fully operational <b style="color:var(--ink)">offline</b>, then re-syncs to the hub when the link returns. Tailscale is the encrypted mesh underneath; the cloud VPS is the always-on public doorway. Drag-free, live — watch leaf traffic flow to the hub.</p>
+  </div>
+  <div class="topo"><canvas id="topoCanvas"></canvas></div>
+  <div class="zone-key">
+    <div class="z"><i style="background:var(--nature)"></i> Homestead — House · Barn · Greenhouse</div>
+    <div class="z"><i style="background:var(--hub)"></i> Hub — omos-mbp (standalone core)</div>
+    <div class="z"><i style="background:var(--agents)"></i> Office — workstation leaf</div>
+    <div class="z"><i style="background:var(--cloud)"></i> Cloud — omos-cloud VPS (Tailscale Funnel)</div>
+    <div class="z"><i style="background:var(--robotics)"></i> Mobile — Go2 · G1 · drone</div>
+  </div>
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card"><h3 style="color:var(--hub)">The hub stays standalone</h3><p>omos-mbp runs a plain nats-server. It never embeds — it's the anchor every leaf connects up to. JetStream streams (EVT/CMD/TEL/VOICE) live here, replicated.</p></div>
+    <div class="card"><h3 style="color:var(--nature)">Leaves survive offline</h3><p>barn-pi loses wifi? Its embedded NATS keeps serving local sensors and the local agent. When the link returns, JetStream mirrors the gap. No data lost.</p></div>
+    <div class="card"><h3 style="color:var(--cloud)">Cloud is the doorway</h3><p>omos-cloud is a leaf with a public Tailscale Funnel entry. Voice from anywhere, webhooks from any SaaS, the app from your phone — all enter here, then ride the mesh home.</p></div>
+  </div>
+</section>
+
+<!-- ============ SAAS ============ -->
+<section class="view" id="view-saas">
+  <div class="vhead">
+    <div class="kick">SaaS, re-imagined</div>
+    <h2>No API calls in your code. Ever.</h2>
+    <p>Traditional access means writing HTTP clients, auth refresh, retry logic, and rate limiting forty times for forty providers. On the fabric, <b style="color:var(--ink)">every SaaS provider is a subject pattern</b>. An agent publishes a request; a Wombat connector or om-saas service does the HTTP; the response comes back as a subject and is captured in ClickHouse forever. Provider rotation becomes a config change.</p>
+  </div>
+  <div class="flow">
+    <div class="step saas"><div class="arrowdot"></div><div class="n">01 · TRIGGER</div><h4>Skool webhook</h4><p>New Wealth Warriors member joins.</p><code>→ Wombat /webhooks/skool</code></div>
+    <div class="step saas"><div class="arrowdot" style="animation-delay:.3s"></div><div class="n">02 · NORMALIZE</div><h4>Wombat → Bus</h4><p>YAML connector, no code. Webhook becomes a clean subject.</p><code>saas.skool.member.joined</code></div>
+    <div class="step saas"><div class="arrowdot" style="animation-delay:.6s"></div><div class="n">03 · REACT</div><h4>om-meta task</h4><p>Watch job spawns an onboarding task for Legacy.</p><code>evt.task.issue.created</code></div>
+    <div class="step saas"><div class="arrowdot" style="animation-delay:.9s"></div><div class="n">04 · EXECUTE</div><h4>Agent → GHL</h4><p>Legacy runs the protocol. Publishes — never calls HTTP.</p><code>saas.ghl.contact.create.request</code></div>
+    <div class="step saas"><div class="arrowdot" style="animation-delay:1.2s"></div><div class="n">05 · RECORD</div><h4>ClickHouse</h4><p>Every request + response captured via NATS engine table.</p><code>evt.saas.onboarding.completed</code></div>
+  </div>
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card"><h3 style="color:var(--saas)">Any agent, any provider</h3><p>Legacy publishes <code class="k">saas.ghl.contact.create.request</code>. Whether the responder uses REST, an MCP server, or a CLI is invisible. The subject is the contract.</p></div>
+    <div class="card"><h3 style="color:var(--saas)">Webhooks are first-class</h3><p>No polling. Skool / GHL / Stripe fire → Wombat normalizes → bus event → subscribers react instantly. Inbound and outbound, same fabric.</p></div>
+    <div class="card"><h3 style="color:var(--saas)">Full audit, free</h3><p>Every SaaS call flows through ClickHouse. Permanent trail: "show every GHL contact created in March" is one SQL query. Rate limits & retries live in the bridge.</p></div>
+  </div>
+  <div class="callout"><div class="ic">⇄</div><p><b>Why this beats API / MCP / CLI directly:</b> those couple your agent to a vendor's shape and give you no record. Through the bus, the agent is decoupled (publish & await), the interaction is captured (ClickHouse), the provider is swappable (Wombat YAML), and <b>any node on the fabric</b> — even a robot or the voice agent — can trigger a SaaS action without knowing the API exists.</p></div>
 </section>
 
 <!-- ============ ANATOMY ============ -->
@@ -445,50 +489,6 @@ client.<span class="fn">sub</span>(<span class="st">'evt.&gt;'</span>).<span cla
     <div class="card"><h3>🤖 Voice reaches robots</h3><p>"Go2, patrol the perimeter" → transcript → <code class="k">cmd.go2.patrol.start</code>. The robot subscribes to its own command subject. The voice agent never talks to the robot directly — the bus does.</p></div>
     <div class="card"><h3>🧠 Native, not hopped</h3><p>Tools wire straight to NATS subjects, not through Hermes. The realtime model calls <code class="k">tools.*</code> as NATS requests — zero extra latency, no agent middleman.</p></div>
   </div>
-</section>
-
-<!-- ============ TOPOLOGY ============ -->
-<section class="view" id="view-topology">
-  <div class="vhead">
-    <div class="kick">Physical reality</div>
-    <h2>Homestead ⇄ Hub ⇄ Office ⇄ Cloud</h2>
-    <p>One logical bus, many physical locations. Each site runs a leaf node with embedded NATS — fully operational <b style="color:var(--ink)">offline</b>, then re-syncs to the hub when the link returns. Tailscale is the encrypted mesh underneath; the cloud VPS is the always-on public doorway. Drag-free, live — watch leaf traffic flow to the hub.</p>
-  </div>
-  <div class="topo"><canvas id="topoCanvas"></canvas></div>
-  <div class="zone-key">
-    <div class="z"><i style="background:var(--nature)"></i> Homestead — House · Barn · Greenhouse</div>
-    <div class="z"><i style="background:var(--hub)"></i> Hub — omos-mbp (standalone core)</div>
-    <div class="z"><i style="background:var(--agents)"></i> Office — workstation leaf</div>
-    <div class="z"><i style="background:var(--cloud)"></i> Cloud — omos-cloud VPS (Tailscale Funnel)</div>
-    <div class="z"><i style="background:var(--robotics)"></i> Mobile — Go2 · G1 · drone</div>
-  </div>
-  <div class="grid g3" style="margin-top:16px">
-    <div class="card"><h3 style="color:var(--hub)">The hub stays standalone</h3><p>omos-mbp runs a plain nats-server. It never embeds — it's the anchor every leaf connects up to. JetStream streams (EVT/CMD/TEL/VOICE) live here, replicated.</p></div>
-    <div class="card"><h3 style="color:var(--nature)">Leaves survive offline</h3><p>barn-pi loses wifi? Its embedded NATS keeps serving local sensors and the local agent. When the link returns, JetStream mirrors the gap. No data lost.</p></div>
-    <div class="card"><h3 style="color:var(--cloud)">Cloud is the doorway</h3><p>omos-cloud is a leaf with a public Tailscale Funnel entry. Voice from anywhere, webhooks from any SaaS, the app from your phone — all enter here, then ride the mesh home.</p></div>
-  </div>
-</section>
-
-<!-- ============ SAAS ============ -->
-<section class="view" id="view-saas">
-  <div class="vhead">
-    <div class="kick">SaaS, re-imagined</div>
-    <h2>No API calls in your code. Ever.</h2>
-    <p>Traditional access means writing HTTP clients, auth refresh, retry logic, and rate limiting forty times for forty providers. On the fabric, <b style="color:var(--ink)">every SaaS provider is a subject pattern</b>. An agent publishes a request; a Wombat connector or om-saas service does the HTTP; the response comes back as a subject and is captured in ClickHouse forever. Provider rotation becomes a config change.</p>
-  </div>
-  <div class="flow">
-    <div class="step saas"><div class="arrowdot"></div><div class="n">01 · TRIGGER</div><h4>Skool webhook</h4><p>New Wealth Warriors member joins.</p><code>→ Wombat /webhooks/skool</code></div>
-    <div class="step saas"><div class="arrowdot" style="animation-delay:.3s"></div><div class="n">02 · NORMALIZE</div><h4>Wombat → Bus</h4><p>YAML connector, no code. Webhook becomes a clean subject.</p><code>saas.skool.member.joined</code></div>
-    <div class="step saas"><div class="arrowdot" style="animation-delay:.6s"></div><div class="n">03 · REACT</div><h4>om-meta task</h4><p>Watch job spawns an onboarding task for Legacy.</p><code>evt.task.issue.created</code></div>
-    <div class="step saas"><div class="arrowdot" style="animation-delay:.9s"></div><div class="n">04 · EXECUTE</div><h4>Agent → GHL</h4><p>Legacy runs the protocol. Publishes — never calls HTTP.</p><code>saas.ghl.contact.create.request</code></div>
-    <div class="step saas"><div class="arrowdot" style="animation-delay:1.2s"></div><div class="n">05 · RECORD</div><h4>ClickHouse</h4><p>Every request + response captured via NATS engine table.</p><code>evt.saas.onboarding.completed</code></div>
-  </div>
-  <div class="grid g3" style="margin-top:16px">
-    <div class="card"><h3 style="color:var(--saas)">Any agent, any provider</h3><p>Legacy publishes <code class="k">saas.ghl.contact.create.request</code>. Whether the responder uses REST, an MCP server, or a CLI is invisible. The subject is the contract.</p></div>
-    <div class="card"><h3 style="color:var(--saas)">Webhooks are first-class</h3><p>No polling. Skool / GHL / Stripe fire → Wombat normalizes → bus event → subscribers react instantly. Inbound and outbound, same fabric.</p></div>
-    <div class="card"><h3 style="color:var(--saas)">Full audit, free</h3><p>Every SaaS call flows through ClickHouse. Permanent trail: "show every GHL contact created in March" is one SQL query. Rate limits & retries live in the bridge.</p></div>
-  </div>
-  <div class="callout"><div class="ic">⇄</div><p><b>Why this beats API / MCP / CLI directly:</b> those couple your agent to a vendor's shape and give you no record. Through the bus, the agent is decoupled (publish & await), the interaction is captured (ClickHouse), the provider is swappable (Wombat YAML), and <b>any node on the fabric</b> — even a robot or the voice agent — can trigger a SaaS action without knowing the API exists.</p></div>
 </section>
 
 </main>
