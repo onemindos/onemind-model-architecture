@@ -56,6 +56,7 @@
     font-family:inherit;font-size:12.5px;font-weight:600;
     color:var(--muted);background:transparent;border:1px solid transparent;
     padding:8px 13px;border-radius:9px;cursor:pointer;transition:.18s;letter-spacing:.2px;
+    -webkit-tap-highlight-color:transparent;
   }
   nav button:hover{color:var(--ink);background:rgba(255,255,255,.04)}
   nav button.active{color:var(--bg);background:linear-gradient(135deg,var(--core),var(--core2));box-shadow:0 4px 16px rgba(0,184,212,.3)}
@@ -72,8 +73,8 @@
 
   /* ---------- FABRIC view ---------- */
   .fabric-wrap{position:relative;border:1px solid var(--border);border-radius:18px;overflow:hidden;
-    background:linear-gradient(180deg,#070e1b,#050a14);min-height:640px}
-  #fabric{display:block;width:100%;height:680px}
+    background:linear-gradient(180deg,#070e1b,#050a14)}
+  #fabric{display:block;width:100%;height:clamp(320px,65vh,680px)}
   .overlay{position:absolute;pointer-events:none}
   .ov-stats{top:16px;left:16px;display:flex;gap:10px;flex-wrap:wrap}
   .stat{
@@ -84,7 +85,7 @@
   .stat .l{font-size:10px;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;margin-top:2px}
 
   .ov-feed{
-    top:16px;right:16px;width:340px;max-width:44vw;pointer-events:auto;
+    top:16px;right:16px;width:280px;max-width:40vw;pointer-events:auto;
     background:var(--panel);border:1px solid var(--border);border-radius:13px;
     backdrop-filter:blur(10px);overflow:hidden;
   }
@@ -99,7 +100,7 @@
   #feed .t{margin-left:auto;color:var(--muted2);font-size:9.5px;flex:none}
 
   .ov-detail{
-    bottom:16px;left:16px;width:360px;max-width:46vw;pointer-events:auto;
+    bottom:16px;left:16px;width:320px;max-width:calc(100% - 32px);pointer-events:auto;
     background:var(--panel);border:1px solid var(--border);border-radius:13px;
     backdrop-filter:blur(10px);padding:15px 16px;transition:.25s;
   }
@@ -154,9 +155,9 @@
   .step code{font-family:'JetBrains Mono';font-size:10px;color:var(--voice);display:block;margin-top:7px;word-break:break-all}
   .step.saas code{color:var(--saas)}
 
-  /* topology */
+  /* ---------- topology ---------- */
   .topo{position:relative;border:1px solid var(--border);border-radius:16px;background:linear-gradient(180deg,#070e1b,#050a14);padding:0;overflow:hidden}
-  #topoCanvas{display:block;width:100%;height:560px}
+  #topoCanvas{display:block;width:100%;height:clamp(280px,55vh,560px)}
   .zone-key{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px}
   .zone-key .z{display:flex;align-items:center;gap:8px;font-size:12px;color:#c4d3e6}
   .zone-key .z i{width:12px;height:12px;border-radius:4px}
@@ -176,7 +177,30 @@
   footer{max-width:1480px;margin:0 auto;padding:20px 22px 40px;color:var(--muted2);font-size:11px;font-family:'JetBrains Mono';display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;border-top:1px solid var(--border);margin-top:24px}
 
   @media(max-width:1080px){.g4{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:1fr}.ov-feed{display:none}.ov-legend{display:none}}
-  @media(max-width:680px){.g4,.g2{grid-template-columns:1fr}nav{display:none}.ov-detail{display:none}}
+  @media(max-width:680px){
+    .g4,.g2{grid-template-columns:1fr}
+    header{flex-wrap:wrap;gap:8px;padding:10px 14px}
+    .brand h1{font-size:13px}
+    .brand .sub{display:none}
+    nav{margin-left:0;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:2px;flex-wrap:nowrap}
+    nav::-webkit-scrollbar{display:none}
+    nav button{flex:none;font-size:11px;padding:7px 10px;white-space:nowrap}
+    main{padding:12px 10px}
+    .vhead h2{font-size:20px}
+    .ov-detail{
+      display:block;
+      position:static;width:100%;max-width:none;border-radius:0 0 14px 14px;
+      border-top:1px solid var(--border2);backdrop-filter:none;
+      background:var(--panel-solid);
+    }
+    .hint{display:none}
+    .ov-stats{gap:6px}
+    .stat{min-width:72px;padding:7px 10px}
+    .stat .v{font-size:15px}
+    .flow{gap:0}
+    .step{min-width:110px;padding:12px 10px;margin-right:24px}
+    pre{font-size:10.5px;padding:10px}
+  }
 </style>
 </head>
 <body>
@@ -556,6 +580,13 @@ cv.addEventListener('click',e=>{
   const n=NODES.find(nd=>Math.hypot(nd.x-mx,nd.y-my)<nd.r+10);
   if(n)showDetail(n);
 });
+cv.addEventListener('touchend',e=>{
+  e.preventDefault();
+  const t=e.changedTouches[0];
+  const r=cv.getBoundingClientRect(),mx=t.clientX-r.left,my=t.clientY-r.top;
+  const n=NODES.find(nd=>Math.hypot(nd.x-mx,nd.y-my)<nd.r+14);
+  if(n)showDetail(n);
+},{passive:false});
 function showDetail(n){
   document.querySelector('#detail .nd').style.background=n.color;
   document.getElementById('d-name').textContent=n.label;
