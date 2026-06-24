@@ -1140,9 +1140,23 @@ Result: intercept drone airborne
   </div>
 
   <!-- NYC MAP SIMULATION -->
-  <canvas id="nyc-canvas" style="width:100%;height:400px;display:block;border-radius:16px;border:1px solid var(--border);background:#060f1e;"></canvas>
+  <div style="position:relative;">
+    <canvas id="nyc-canvas" style="width:100%;height:640px;display:block;border-radius:16px;border:1px solid var(--border);background:#060f1e;"></canvas>
+    <!-- Legend -->
+    <div id="nyc-legend" style="position:absolute;top:14px;right:14px;background:rgba(2,8,18,.88);border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:11px;font-family:'JetBrains Mono',monospace;backdrop-filter:blur(8px);max-width:200px;">
+      <div style="font-weight:700;color:var(--core);margin-bottom:8px;letter-spacing:1.5px;font-size:10px;">TRANSIT LEGEND</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;" id="legend-items"></div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:8px 0;">
+      <div style="color:var(--muted);font-size:10px;" id="nyc-stats">Loading...</div>
+    </div>
+    <!-- NATS feed overlay -->
+    <div style="position:absolute;bottom:14px;left:14px;right:14px;background:rgba(2,8,18,.75);border:1px solid rgba(0,255,229,.15);border-radius:8px;padding:8px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;backdrop-filter:blur(6px);">
+      <span style="color:var(--core);">NATS ▶</span>
+      <span id="nyc-feed-ticker" style="color:var(--muted);margin-left:8px;">tel.mta.subway.1.train_001 · {lat:40.7558,lon:-73.9870,speed:34,next:"Times Sq"}</span>
+    </div>
+  </div>
   <p style="text-align:center;font-size:11px;color:var(--muted2);margin-top:8px;font-family:'JetBrains Mono',monospace;">
-    Simulated NYC transit feed — each moving dot is a subway train / bus position update via GTFS-RT → NATS
+    Geographic NYC transit map — trains + buses riding real routes via GTFS-RT → NATS · Click any dot for NATS subject
   </p>
 
   <hr class="divider">
@@ -1532,86 +1546,723 @@ function addFeedLine() {
   if (subj.type==='evt') { feedEvtCount++; const el=document.getElementById('evt-count'); if(el) el.textContent=feedEvtCount+' msgs stored'; }
 }
 
-// ── NYC CANVAS SIMULATION ──────────────────────────────
-let nycAnimId, nycInit=false;
-const NYC_LINES = [
-  {name:'1',col:'#EE352E',trains:[]},{name:'2',col:'#EE352E',trains:[]},
-  {name:'A',col:'#2850AD',trains:[]},{name:'C',col:'#2850AD',trains:[]},
-  {name:'4',col:'#00933C',trains:[]},{name:'5',col:'#00933C',trains:[]},
-  {name:'L',col:'#A7A9AC',trains:[]},{name:'N',col:'#FCCC0A',trains:[]},
-  {name:'Q',col:'#FCCC0A',trains:[]},{name:'7',col:'#B933AD',trains:[]},
+// ══════════════════════════════════════════════════════════════════
+// NYC TRANSIT MAP — geographic routes, trains + buses on real paths
+// ══════════════════════════════════════════════════════════════════
+let nycAnimId, nycInit = false;
+
+// Geographic bounding box for NYC (Manhattan + surrounding boroughs)
+// lat: 40.495 (south) → 40.915 (north)   lon: -74.26 (west) → -73.70 (east)
+const GEO = { latMin:40.495, latMax:40.915, lonMin:-74.26, lonMax:-73.70 };
+
+function geoToCanvas(lat, lon, W, H) {
+  const x = (lon - GEO.lonMin) / (GEO.lonMax - GEO.lonMin) * W;
+  const y = (1 - (lat - GEO.latMin) / (GEO.latMax - GEO.latMin)) * H;
+  return [x, y];
+}
+
+// ── SUBWAY ROUTES (geographic waypoints, lat/lon) ──────────────────
+// Each route is a loop of stations. Trains travel the polyline and bounce back.
+const SUBWAY_ROUTES = [
+  // 1/2/3 — 7th Ave / Broadway
+  { lines:['1','2','3'], col:'#EE352E', speed:0.0008, trainCount:6,
+    stations:[
+      {n:'Van Cortlandt',lat:40.8898,lon:-73.8988},
+      {n:'242nd St',     lat:40.8836,lon:-73.9029},
+      {n:'238th St',     lat:40.8784,lon:-73.9057},
+      {n:'231st St',     lat:40.8729,lon:-73.9088},
+      {n:'207th St',     lat:40.8645,lon:-73.9194},
+      {n:'191st St',     lat:40.8557,lon:-73.9296},
+      {n:'181st St',     lat:40.8497,lon:-73.9339},
+      {n:'168th St',     lat:40.8404,lon:-73.9394},
+      {n:'145th St',     lat:40.8286,lon:-73.9441},
+      {n:'137th St',     lat:40.8224,lon:-73.9474},
+      {n:'125th St',     lat:40.8154,lon:-73.9527},
+      {n:'116th St',     lat:40.8051,lon:-73.9654},
+      {n:'110th St',     lat:40.7994,lon:-73.9667},
+      {n:'103rd St',     lat:40.7963,lon:-73.9689},
+      {n:'96th St',      lat:40.7935,lon:-73.9722},
+      {n:'86th St',      lat:40.7887,lon:-73.9762},
+      {n:'79th St',      lat:40.7836,lon:-73.9800},
+      {n:'72nd St',      lat:40.7782,lon:-73.9823},
+      {n:'66th St',      lat:40.7737,lon:-73.9824},
+      {n:'59th St',      lat:40.7681,lon:-73.9817},
+      {n:'50th St',      lat:40.7615,lon:-73.9836},
+      {n:'Times Sq 42nd',lat:40.7556,lon:-73.9870},
+      {n:'34th St Penn', lat:40.7506,lon:-73.9910},
+      {n:'28th St',      lat:40.7472,lon:-73.9941},
+      {n:'23rd St',      lat:40.7451,lon:-73.9984},
+      {n:'18th St',      lat:40.7415,lon:-74.0000},
+      {n:'14th St',      lat:40.7378,lon:-74.0000},
+      {n:'Christopher',  lat:40.7332,lon:-74.0029},
+      {n:'Houston St',   lat:40.7282,lon:-74.0053},
+      {n:'Canal St',     lat:40.7226,lon:-74.0055},
+      {n:'Chambers St',  lat:40.7153,lon:-74.0085},
+      {n:'Fulton St',    lat:40.7097,lon:-74.0077},
+      {n:'Rector St',    lat:40.7072,lon:-74.0132},
+      {n:'South Ferry',  lat:40.7018,lon:-74.0135},
+    ]
+  },
+  // A/C/E — 8th Ave
+  { lines:['A','C','E'], col:'#2850AD', speed:0.0009, trainCount:7,
+    stations:[
+      {n:'Inwood 207',   lat:40.8678,lon:-73.9199},
+      {n:'190th St',     lat:40.8593,lon:-73.9340},
+      {n:'181st St',     lat:40.8498,lon:-73.9374},
+      {n:'175th St',     lat:40.8470,lon:-73.9394},
+      {n:'168th St',     lat:40.8403,lon:-73.9400},
+      {n:'163rd St',     lat:40.8360,lon:-73.9401},
+      {n:'155th St',     lat:40.8302,lon:-73.9414},
+      {n:'145th St',     lat:40.8241,lon:-73.9435},
+      {n:'135th St',     lat:40.8171,lon:-73.9488},
+      {n:'125th St',     lat:40.8111,lon:-73.9524},
+      {n:'116th St',     lat:40.8050,lon:-73.9575},
+      {n:'110th St',     lat:40.7989,lon:-73.9614},
+      {n:'103rd St',     lat:40.7961,lon:-73.9643},
+      {n:'96th St',      lat:40.7919,lon:-73.9691},
+      {n:'86th St',      lat:40.7859,lon:-73.9751},
+      {n:'81st St',      lat:40.7821,lon:-73.9790},
+      {n:'72nd St',      lat:40.7775,lon:-73.9824},
+      {n:'59th St',      lat:40.7683,lon:-73.9876},
+      {n:'50th St',      lat:40.7619,lon:-73.9910},
+      {n:'42nd St PortAu',lat:40.7571,lon:-73.9899},
+      {n:'34th St Penn', lat:40.7522,lon:-73.9952},
+      {n:'23rd St',      lat:40.7459,lon:-74.0009},
+      {n:'14th St',      lat:40.7404,lon:-74.0050},
+      {n:'W 4th St',     lat:40.7326,lon:-74.0001},
+      {n:'Spring St',    lat:40.7262,lon:-74.0030},
+      {n:'Canal St',     lat:40.7200,lon:-74.0049},
+      {n:'Chambers St',  lat:40.7127,lon:-74.0123},
+      {n:'Fulton St',    lat:40.7090,lon:-74.0113},
+      {n:'Howard Bch',   lat:40.6601,lon:-73.8308},
+      {n:'JFK Airport',  lat:40.6463,lon:-73.7822},
+    ]
+  },
+  // 4/5/6 — Lexington Ave
+  { lines:['4','5','6'], col:'#00933C', speed:0.0010, trainCount:7,
+    stations:[
+      {n:'Woodlawn',     lat:40.8999,lon:-73.8783},
+      {n:'Mosholu Pkwy', lat:40.8886,lon:-73.8842},
+      {n:'Bedford Pk Blvd',lat:40.8733,lon:-73.8888},
+      {n:'Kingsbridge',  lat:40.8672,lon:-73.8951},
+      {n:'183rd St',     lat:40.8583,lon:-73.9001},
+      {n:'Fordham Rd',   lat:40.8621,lon:-73.8990},
+      {n:'Burnside Ave', lat:40.8530,lon:-73.9019},
+      {n:'174th St',     lat:40.8472,lon:-73.9059},
+      {n:'170th St',     lat:40.8392,lon:-73.9163},
+      {n:'167th St',     lat:40.8352,lon:-73.9247},
+      {n:'161st St Yankee',lat:40.8278,lon:-73.9256},
+      {n:'149th St',     lat:40.8186,lon:-73.9272},
+      {n:'138th St',     lat:40.8131,lon:-73.9361},
+      {n:'125th St',     lat:40.8041,lon:-73.9383},
+      {n:'116th St',     lat:40.7983,lon:-73.9425},
+      {n:'110th St',     lat:40.7924,lon:-73.9474},
+      {n:'103rd St',     lat:40.7898,lon:-73.9479},
+      {n:'96th St',      lat:40.7851,lon:-73.9491},
+      {n:'86th St',      lat:40.7792,lon:-73.9542},
+      {n:'77th St',      lat:40.7738,lon:-73.9580},
+      {n:'68th St',      lat:40.7685,lon:-73.9641},
+      {n:'59th St',      lat:40.7624,lon:-73.9674},
+      {n:'51st St',      lat:40.7568,lon:-73.9723},
+      {n:'Grand Central',lat:40.7527,lon:-73.9771},
+      {n:'33rd St',      lat:40.7470,lon:-73.9820},
+      {n:'28th St',      lat:40.7442,lon:-73.9838},
+      {n:'23rd St',      lat:40.7396,lon:-73.9864},
+      {n:'14th St Union',lat:40.7353,lon:-73.9896},
+      {n:'Astor Pl',     lat:40.7302,lon:-73.9913},
+      {n:'Bleecker St',  lat:40.7261,lon:-73.9942},
+      {n:'Spring St',    lat:40.7224,lon:-73.9967},
+      {n:'Canal St',     lat:40.7181,lon:-74.0007},
+      {n:'Brooklyn Bridge',lat:40.7133,lon:-74.0040},
+      {n:'Fulton St',    lat:40.7090,lon:-74.0071},
+      {n:'Wall St',      lat:40.7075,lon:-74.0121},
+      {n:'Bowling Green',lat:40.7043,lon:-74.0140},
+    ]
+  },
+  // N/Q/R/W — Broadway / Yellow
+  { lines:['N','Q','R','W'], col:'#FCCC0A', speed:0.0007, trainCount:6,
+    stations:[
+      {n:'Astoria-Ditmars',lat:40.7754,lon:-73.9305},
+      {n:'Astoria Blvd',   lat:40.7716,lon:-73.9299},
+      {n:'30th Ave',       lat:40.7676,lon:-73.9304},
+      {n:'Broadway Astoria',lat:40.7641,lon:-73.9302},
+      {n:'36th Ave',       lat:40.7561,lon:-73.9298},
+      {n:'Queensboro Pl',  lat:40.7504,lon:-73.9298},
+      {n:'Lexington 59th', lat:40.7625,lon:-73.9666},
+      {n:'5th Ave 59th',   lat:40.7647,lon:-73.9732},
+      {n:'57th St 7th',    lat:40.7648,lon:-73.9798},
+      {n:'49th St',        lat:40.7598,lon:-73.9847},
+      {n:'Times Sq 42nd',  lat:40.7556,lon:-73.9870},
+      {n:'34th Herald Sq', lat:40.7490,lon:-73.9882},
+      {n:'28th St',        lat:40.7453,lon:-73.9888},
+      {n:'23rd St',        lat:40.7428,lon:-73.9891},
+      {n:'14th St Union',  lat:40.7353,lon:-73.9896},
+      {n:'8th St',         lat:40.7301,lon:-73.9910},
+      {n:'Prince St',      lat:40.7245,lon:-73.9975},
+      {n:'Canal St',       lat:40.7199,lon:-74.0013},
+      {n:'City Hall',      lat:40.7133,lon:-74.0080},
+      {n:'Cortlandt St',   lat:40.7107,lon:-74.0112},
+      {n:'Rector St',      lat:40.7074,lon:-74.0133},
+      {n:'Whitehall St',   lat:40.7032,lon:-74.0134},
+      {n:'Bay Ridge 95th', lat:40.6161,lon:-74.0300},
+      {n:'Bay Ridge Ave',  lat:40.6223,lon:-74.0279},
+    ]
+  },
+  // L — 14th St crosstown
+  { lines:['L'], col:'#A7A9AC', speed:0.0012, trainCount:5,
+    stations:[
+      {n:'8th Ave',        lat:40.7401,lon:-74.0026},
+      {n:'6th Ave',        lat:40.7383,lon:-73.9999},
+      {n:'Union Sq 14th',  lat:40.7353,lon:-73.9896},
+      {n:'3rd Ave',        lat:40.7328,lon:-73.9861},
+      {n:'1st Ave',        lat:40.7305,lon:-73.9814},
+      {n:'Bedford Ave',    lat:40.7171,lon:-73.9564},
+      {n:'Lorimer St',     lat:40.7140,lon:-73.9494},
+      {n:'Graham Ave',     lat:40.7144,lon:-73.9441},
+      {n:'Grand St',       lat:40.7117,lon:-73.9408},
+      {n:'Montrose Ave',   lat:40.7082,lon:-73.9378},
+      {n:'Morgan Ave',     lat:40.7062,lon:-73.9298},
+      {n:'Jefferson St',   lat:40.7066,lon:-73.9219},
+      {n:'DeKalb Ave',     lat:40.7034,lon:-73.9184},
+      {n:'Myrtle-Wyckoff', lat:40.6994,lon:-73.9116},
+      {n:'Halsey St',      lat:40.6962,lon:-73.9055},
+      {n:'Wilson Ave',     lat:40.6886,lon:-73.9046},
+      {n:'Bushwick Ave',   lat:40.6848,lon:-73.9053},
+      {n:'Atlantic Ave',   lat:40.6786,lon:-73.9050},
+      {n:'Sutter Ave',     lat:40.6693,lon:-73.9003},
+      {n:'Livonia Ave',    lat:40.6641,lon:-73.8993},
+      {n:'New Lots Ave',   lat:40.6602,lon:-73.8971},
+      {n:'E 105th St',     lat:40.6503,lon:-73.8952},
+      {n:'Canarsie',       lat:40.6462,lon:-73.9015},
+    ]
+  },
+  // 7 — Flushing Line
+  { lines:['7'], col:'#B933AD', speed:0.0011, trainCount:5,
+    stations:[
+      {n:'Flushing Main', lat:40.7596,lon:-73.8330},
+      {n:'Mets Willets',  lat:40.7540,lon:-73.8455},
+      {n:'Junction Blvd', lat:40.7495,lon:-73.8688},
+      {n:'90th St Elmhurst',lat:40.7501,lon:-73.8753},
+      {n:'82nd St Jackson',lat:40.7485,lon:-73.8833},
+      {n:'74th St Jackson',lat:40.7468,lon:-73.8908},
+      {n:'69th St',       lat:40.7460,lon:-73.8988},
+      {n:'61st Woodside', lat:40.7457,lon:-73.9020},
+      {n:'52nd St',       lat:40.7453,lon:-73.9074},
+      {n:'46th St Bliss', lat:40.7446,lon:-73.9157},
+      {n:'40th St Lowery',lat:40.7447,lon:-73.9218},
+      {n:'33rd St Rawson',lat:40.7453,lon:-73.9293},
+      {n:'Queens Plaza',  lat:40.7489,lon:-73.9409},
+      {n:'Court Sq',      lat:40.7470,lon:-73.9458},
+      {n:'Hunters Pt',    lat:40.7447,lon:-73.9527},
+      {n:'Vernon Blvd',   lat:40.7423,lon:-73.9574},
+      {n:'Grand Central', lat:40.7527,lon:-73.9771},
+      {n:'5th Ave',       lat:40.7547,lon:-73.9820},
+      {n:'Times Sq 42nd', lat:40.7556,lon:-73.9870},
+      {n:'Hudson Yards',  lat:40.7539,lon:-74.0020},
+    ]
+  },
+  // B/D — Central Park West / 6th Ave
+  { lines:['B','D'], col:'#FF6319', speed:0.0008, trainCount:5,
+    stations:[
+      {n:'Norwood 205th', lat:40.8750,lon:-73.8780},
+      {n:'Marble Hill',   lat:40.8760,lon:-73.9092},
+      {n:'225th St',      lat:40.8687,lon:-73.9138},
+      {n:'Tremont Ave',   lat:40.8527,lon:-73.9071},
+      {n:'174th St Grand',lat:40.8479,lon:-73.9165},
+      {n:'170th St',      lat:40.8402,lon:-73.9167},
+      {n:'161st Yankee',  lat:40.8278,lon:-73.9256},
+      {n:'155th St',      lat:40.8300,lon:-73.9357},
+      {n:'145th St',      lat:40.8239,lon:-73.9460},
+      {n:'135th St',      lat:40.8177,lon:-73.9505},
+      {n:'125th St',      lat:40.8115,lon:-73.9553},
+      {n:'116th St',      lat:40.8053,lon:-73.9594},
+      {n:'110th St CPW',  lat:40.7984,lon:-73.9614},
+      {n:'103rd St CPW',  lat:40.7964,lon:-73.9624},
+      {n:'96th St CPW',   lat:40.7944,lon:-73.9611},
+      {n:'86th St CPW',   lat:40.7851,lon:-73.9677},
+      {n:'81st St Museum',lat:40.7812,lon:-73.9733},
+      {n:'72nd St',       lat:40.7776,lon:-73.9807},
+      {n:'47-50th Rock',  lat:40.7588,lon:-73.9797},
+      {n:'42nd St Bryant',lat:40.7545,lon:-73.9841},
+      {n:'34th Herald Sq',lat:40.7490,lon:-73.9882},
+      {n:'23rd St',       lat:40.7428,lon:-73.9891},
+      {n:'14th St',       lat:40.7363,lon:-73.9974},
+      {n:'W 4th St',      lat:40.7326,lon:-74.0001},
+      {n:'Broadway Lafayette',lat:40.7252,lon:-73.9961},
+      {n:'Grand St',      lat:40.7218,lon:-73.9952},
+      {n:'Atlantic Ave',  lat:40.6843,lon:-73.9778},
+      {n:'Brighton Beach',lat:40.5778,lon:-73.9614},
+      {n:'Coney Island',  lat:40.5753,lon:-73.9815},
+    ]
+  },
+  // F/M — 6th Ave / Queens Blvd
+  { lines:['F','M'], col:'#FF6319', speed:0.0009, trainCount:6,
+    stations:[
+      {n:'Jamaica 179th', lat:40.7121,lon:-73.7903},
+      {n:'Sutphin Blvd',  lat:40.7030,lon:-73.8077},
+      {n:'Briarwood',     lat:40.7094,lon:-73.8239},
+      {n:'Kew Gardens',   lat:40.7149,lon:-73.8316},
+      {n:'Forest Hills',  lat:40.7213,lon:-73.8441},
+      {n:'71 Continental',lat:40.7278,lon:-73.8602},
+      {n:'67th Ave',      lat:40.7234,lon:-73.8739},
+      {n:'63rd Drive',    lat:40.7239,lon:-73.8822},
+      {n:'Rego Center',   lat:40.7248,lon:-73.8947},
+      {n:'Queens Plaza',  lat:40.7489,lon:-73.9409},
+      {n:'21st St',       lat:40.7440,lon:-73.9516},
+      {n:'Lexington 23rd',lat:40.7396,lon:-73.9864},
+      {n:'2nd Ave',       lat:40.7322,lon:-73.9904},
+      {n:'Delancey Essex',lat:40.7182,lon:-73.9877},
+      {n:'Broadway Lafayette',lat:40.7252,lon:-73.9961},
+      {n:'Houston St',    lat:40.7286,lon:-74.0057},
+      {n:'23rd St 6th',   lat:40.7428,lon:-73.9999},
+      {n:'34th St',       lat:40.7490,lon:-73.9937},
+      {n:'42nd St 6th',   lat:40.7540,lon:-73.9876},
+      {n:'47-50th Rock',  lat:40.7588,lon:-73.9797},
+      {n:'57th St 6th',   lat:40.7634,lon:-73.9777},
+      {n:'7th Ave',       lat:40.7665,lon:-73.9782},
+    ]
+  },
+  // J/Z — Nassau St
+  { lines:['J','Z'], col:'#996633', speed:0.0010, trainCount:4,
+    stations:[
+      {n:'Jamaica Center',lat:40.7025,lon:-73.8016},
+      {n:'Sutphin Blvd',  lat:40.7027,lon:-73.8077},
+      {n:'Parsons Archer',lat:40.7025,lon:-73.8175},
+      {n:'Jamaica 121st', lat:40.7029,lon:-73.8259},
+      {n:'111th St',      lat:40.7023,lon:-73.8358},
+      {n:'104th St',      lat:40.6992,lon:-73.8422},
+      {n:'Woodhaven Blvd',lat:40.6935,lon:-73.8551},
+      {n:'85th St Forest',lat:40.6897,lon:-73.8670},
+      {n:'75th St Elderts',lat:40.6899,lon:-73.8745},
+      {n:'Cypress Hills', lat:40.6867,lon:-73.8753},
+      {n:'Norwood Ave',   lat:40.6843,lon:-73.8814},
+      {n:'Cleveland St',  lat:40.6787,lon:-73.8801},
+      {n:'Crescent St',   lat:40.6824,lon:-73.8899},
+      {n:'Elderts Lane',  lat:40.6922,lon:-73.8714},
+      {n:'Marcy Ave',     lat:40.7083,lon:-73.9572},
+      {n:'Hewes St',      lat:40.7082,lon:-73.9533},
+      {n:'Lorimer St',    lat:40.7140,lon:-73.9494},
+      {n:'Flushing Ave',  lat:40.7002,lon:-73.9501},
+      {n:'Myrtle Ave',    lat:40.6974,lon:-73.9413},
+      {n:'Gates Ave',     lat:40.6896,lon:-73.9221},
+      {n:'Halsey St',     lat:40.6849,lon:-73.9118},
+      {n:'Chauncey St',   lat:40.6813,lon:-73.9071},
+      {n:'Bowery',        lat:40.7204,lon:-73.9944},
+      {n:'Canal St',      lat:40.7181,lon:-74.0007},
+      {n:'Chambers St',   lat:40.7153,lon:-74.0085},
+      {n:'Fulton St',     lat:40.7090,lon:-74.0113},
+    ]
+  },
+  // G — Brooklyn–Queens Crosstown
+  { lines:['G'], col:'#6CBE45', speed:0.0011, trainCount:4,
+    stations:[
+      {n:'Court Sq',      lat:40.7470,lon:-73.9458},
+      {n:'21st St Qnsbrg',lat:40.7440,lon:-73.9516},
+      {n:'Greenpoint Ave',lat:40.7313,lon:-73.9546},
+      {n:'Nassau Ave',    lat:40.7244,lon:-73.9510},
+      {n:'Metropolitan',  lat:40.7143,lon:-73.9511},
+      {n:'Broadway G',    lat:40.7060,lon:-73.9502},
+      {n:'Flushing Ave',  lat:40.7002,lon:-73.9501},
+      {n:'Myrtle Willoughby',lat:40.6946,lon:-73.9495},
+      {n:'Bedford Nostrand',lat:40.6895,lon:-73.9528},
+      {n:'Classon Ave',   lat:40.6886,lon:-73.9608},
+      {n:'Clinton Washington',lat:40.6886,lon:-73.9668},
+      {n:'Fulton St G',   lat:40.6882,lon:-73.9754},
+      {n:'Hoyt Schermerhorn',lat:40.6882,lon:-73.9867},
+      {n:'Smith 9th Sts', lat:40.6736,lon:-73.9958},
+      {n:'4th Ave 9th',   lat:40.6706,lon:-73.9887},
+      {n:'7th Ave G',     lat:40.6670,lon:-73.9803},
+      {n:'15th St Prospect',lat:40.6603,lon:-73.9790},
+      {n:'Church Ave',    lat:40.6504,lon:-73.9791},
+      {n:'Fort Hamilton', lat:40.6317,lon:-74.0160},
+    ]
+  },
+  // S — 42nd St Shuttle
+  { lines:['S'], col:'#808183', speed:0.0020, trainCount:3,
+    stations:[
+      {n:'Times Sq',      lat:40.7556,lon:-73.9870},
+      {n:'Grand Central', lat:40.7527,lon:-73.9771},
+    ]
+  },
+];
+
+// ── BUS ROUTES (major NYC bus lines, geographic) ──────────────────
+const BUS_ROUTES = [
+  { line:'M15', col:'#1ABFFF', speed:0.0004, busCount:8,
+    stops:[
+      {n:'City Hall',   lat:40.7133,lon:-74.0077},
+      {n:'Houston',     lat:40.7282,lon:-73.9842},
+      {n:'14th St',     lat:40.7353,lon:-73.9774},
+      {n:'23rd St',     lat:40.7416,lon:-73.9764},
+      {n:'34th St',     lat:40.7476,lon:-73.9745},
+      {n:'42nd St',     lat:40.7538,lon:-73.9724},
+      {n:'57th St',     lat:40.7597,lon:-73.9695},
+      {n:'72nd St',     lat:40.7690,lon:-73.9625},
+      {n:'86th St',     lat:40.7770,lon:-73.9570},
+      {n:'96th St',     lat:40.7839,lon:-73.9522},
+      {n:'106th St',    lat:40.7951,lon:-73.9452},
+      {n:'116th St',    lat:40.8001,lon:-73.9400},
+      {n:'125th St',    lat:40.8100,lon:-73.9370},
+      {n:'Harlem 135th',lat:40.8173,lon:-73.9337},
+    ]
+  },
+  { line:'M101', col:'#FF9900', speed:0.0003, busCount:7,
+    stops:[
+      {n:'City Hall',   lat:40.7133,lon:-74.0077},
+      {n:'Park Row',    lat:40.7115,lon:-74.0066},
+      {n:'Fulton St',   lat:40.7094,lon:-74.0000},
+      {n:'Chambers St', lat:40.7153,lon:-74.0085},
+      {n:'Canal St',    lat:40.7181,lon:-73.9930},
+      {n:'Houston',     lat:40.7275,lon:-73.9886},
+      {n:'14th St',     lat:40.7353,lon:-73.9847},
+      {n:'23rd St',     lat:40.7416,lon:-73.9829},
+      {n:'34th St',     lat:40.7476,lon:-73.9804},
+      {n:'42nd St',     lat:40.7538,lon:-73.9786},
+      {n:'50th St',     lat:40.7594,lon:-73.9770},
+      {n:'60th St',     lat:40.7647,lon:-73.9754},
+      {n:'72nd St',     lat:40.7725,lon:-73.9726},
+      {n:'86th St',     lat:40.7802,lon:-73.9691},
+      {n:'96th St',     lat:40.7862,lon:-73.9673},
+      {n:'110th St',    lat:40.7977,lon:-73.9641},
+      {n:'125th St',    lat:40.8075,lon:-73.9590},
+    ]
+  },
+  { line:'BX1', col:'#FF6600', speed:0.0005, busCount:6,
+    stops:[
+      {n:'138th St',    lat:40.8115,lon:-73.9261},
+      {n:'149th St',    lat:40.8186,lon:-73.9220},
+      {n:'161st St',    lat:40.8278,lon:-73.9256},
+      {n:'170th St',    lat:40.8402,lon:-73.9163},
+      {n:'180th St',    lat:40.8479,lon:-73.9093},
+      {n:'Fordham Rd',  lat:40.8621,lon:-73.9090},
+      {n:'Gun Hill Rd', lat:40.8779,lon:-73.8852},
+      {n:'241st St',    lat:40.9039,lon:-73.8709},
+    ]
+  },
+  { line:'Q44', col:'#FFCC00', speed:0.0004, busCount:5,
+    stops:[
+      {n:'Jamaica Ctr', lat:40.7025,lon:-73.8016},
+      {n:'Parsons',     lat:40.7088,lon:-73.8175},
+      {n:'Hillside Ave',lat:40.7191,lon:-73.8341},
+      {n:'Briarwood',   lat:40.7094,lon:-73.8239},
+      {n:'Kew Gardens', lat:40.7149,lon:-73.8316},
+      {n:'Union Tpk',   lat:40.7225,lon:-73.8450},
+      {n:'Flushing',    lat:40.7596,lon:-73.8330},
+      {n:'College Pt',  lat:40.7831,lon:-73.8434},
+    ]
+  },
+  { line:'M14', col:'#00CCAA', speed:0.0005, busCount:7,
+    stops:[
+      {n:'9th Ave 14th',lat:40.7401,lon:-74.0026},
+      {n:'8th Ave',     lat:40.7401,lon:-74.0020},
+      {n:'7th Ave',     lat:40.7378,lon:-74.0000},
+      {n:'6th Ave',     lat:40.7383,lon:-73.9999},
+      {n:'5th Ave',     lat:40.7386,lon:-73.9934},
+      {n:'4th Ave',     lat:40.7363,lon:-73.9907},
+      {n:'3rd Ave',     lat:40.7353,lon:-73.9879},
+      {n:'2nd Ave',     lat:40.7348,lon:-73.9842},
+      {n:'1st Ave',     lat:40.7340,lon:-73.9808},
+      {n:'Ave A',       lat:40.7330,lon:-73.9790},
+      {n:'Ave B',       lat:40.7328,lon:-73.9762},
+      {n:'Ave C',       lat:40.7328,lon:-73.9724},
+      {n:'Ave D',       lat:40.7320,lon:-73.9682},
+    ]
+  },
+  { line:'B63', col:'#FF99CC', speed:0.0004, busCount:5,
+    stops:[
+      {n:'5th Ave Park Slope',lat:40.6672,lon:-73.9805},
+      {n:'Atlantic Ave',      lat:40.6843,lon:-73.9778},
+      {n:'Pacific St',        lat:40.6826,lon:-73.9757},
+      {n:'Dean St',           lat:40.6791,lon:-73.9771},
+      {n:'Union St',          lat:40.6768,lon:-73.9785},
+      {n:'Carroll St',        lat:40.6749,lon:-73.9789},
+      {n:'1st St',            lat:40.6702,lon:-73.9791},
+      {n:'3rd St',            lat:40.6680,lon:-73.9795},
+      {n:'5th St',            lat:40.6660,lon:-73.9798},
+      {n:'9th St',            lat:40.6633,lon:-73.9803},
+      {n:'Hamilton Ave',      lat:40.6564,lon:-73.9938},
+      {n:'Bay Ridge Ave',     lat:40.6223,lon:-74.0279},
+    ]
+  },
+];
+
+// ── STATIONS TO LABEL on map ──────────────────────────────────────
+const MAJOR_STATIONS = [
+  {n:'Times Sq',       lat:40.7556,lon:-73.9870},
+  {n:'Grand Central',  lat:40.7527,lon:-73.9771},
+  {n:'Penn Station',   lat:40.7506,lon:-73.9910},
+  {n:'Union Square',   lat:40.7353,lon:-73.9896},
+  {n:'W4th/Wash Sq',   lat:40.7326,lon:-74.0001},
+  {n:'14th St/8th',    lat:40.7401,lon:-74.0026},
+  {n:'Fulton St',      lat:40.7090,lon:-74.0113},
+  {n:'Atlantic Ave',   lat:40.6843,lon:-73.9778},
+  {n:'Jay St',         lat:40.6922,lon:-73.9869},
+  {n:'125th St',       lat:40.8100,lon:-73.9370},
+  {n:'161st Yankee',   lat:40.8278,lon:-73.9256},
+  {n:'Flushing Main',  lat:40.7596,lon:-73.8330},
+  {n:'Jamaica',        lat:40.7025,lon:-73.8016},
+  {n:'Court Sq',       lat:40.7470,lon:-73.9458},
+  {n:'Borough Hall',   lat:40.6922,lon:-73.9869},
+  {n:'Canal St',       lat:40.7181,lon:-74.0007},
+  {n:'Canarsie',       lat:40.6462,lon:-73.9015},
+  {n:'Coney Island',   lat:40.5753,lon:-73.9815},
+  {n:'JFK Airport',    lat:40.6463,lon:-73.7822},
+];
+
+// ── BOROUGH LABELS ────────────────────────────────────────────────
+const BOROUGHS = [
+  {n:'MANHATTAN', lat:40.7580, lon:-73.9855},
+  {n:'BROOKLYN',  lat:40.6501, lon:-73.9496},
+  {n:'QUEENS',    lat:40.7282, lon:-73.7949},
+  {n:'BRONX',     lat:40.8448, lon:-73.8648},
+];
+
+// ── NATS FEED TICKER DATA ──────────────────────────────────────────
+const FEED_MSGS = [
+  'tel.mta.subway.1.train_001 · {lat:40.7558,lon:-73.9870,speed:34,next:"Times Sq"}',
+  'tel.mta.subway.A.train_042 · {lat:40.8111,lon:-73.9524,speed:28,next:"125th St"}',
+  'tel.mta.subway.7.train_012 · {lat:40.7489,lon:-73.9409,speed:41,next:"Queens Plaza"}',
+  'tel.mta.bus.M15.bus_008   · {lat:40.7690,lon:-73.9625,speed:12,next:"72nd St"}',
+  'tel.mta.subway.L.train_003 · {lat:40.7171,lon:-73.9564,speed:30,next:"Bedford Ave"}',
+  'evt.mta.delay.A.train      · {station:"14th St",delay:8,reason:"signal"}',
+  'tel.mta.subway.N.train_021 · {lat:40.7489,lon:-73.9409,speed:35,next:"Queens Plaza"}',
+  'tel.mta.bus.M101.bus_003  · {lat:40.8075,lon:-73.9590,speed:14,next:"125th St"}',
+  'tel.mta.subway.4.train_007 · {lat:40.7851,lon:-73.9542,speed:32,next:"86th St"}',
+  'tel.mta.subway.6.train_019 · {lat:40.7527,lon:-73.9771,speed:0,next:"Grand Central"}',
+  'tel.mta.bus.Q44.bus_005   · {lat:40.7225,lon:-73.8450,speed:18,next:"Union Tpk"}',
+  'tel.mta.subway.G.train_004 · {lat:40.7313,lon:-73.9546,speed:26,next:"Greenpoint"}',
+  'evt.mta.delay.F.train      · {station:"42nd St",delay:5,reason:"congestion"}',
+  'tel.mta.subway.B.train_011 · {lat:40.8277,lon:-73.9256,speed:38,next:"Yankee Stadium"}',
 ];
 
 function initNYC() {
-  if (nycInit) return; nycInit=true;
-  const C = document.getElementById('nyc-canvas'); if(!C) return;
+  if (nycInit) return; nycInit = false; // allow re-init on resize
+  nycInit = true;
+  const C = document.getElementById('nyc-canvas');
+  if (!C) return;
   const ctx = C.getContext('2d');
-  C.width = C.offsetWidth * window.devicePixelRatio;
-  C.height = C.offsetHeight * window.devicePixelRatio;
-  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-  const W = C.offsetWidth, H = C.offsetHeight;
 
-  NYC_LINES.forEach(line => {
-    const count = Math.floor(Math.random()*6)+4;
-    for (let i=0;i<count;i++) {
-      line.trains.push({
-        x: Math.random()*W*0.8+W*0.1,
-        y: Math.random()*H*0.8+H*0.1,
-        vx: (Math.random()-.5)*0.8,
-        vy: (Math.random()-.5)*0.8,
-        pulse: Math.random()*Math.PI*2,
+  function resize() {
+    C.width  = C.offsetWidth  * window.devicePixelRatio;
+    C.height = C.offsetHeight * window.devicePixelRatio;
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  }
+  resize();
+  window.addEventListener('resize', () => { resize(); });
+
+  const W = () => C.offsetWidth;
+  const H = () => C.offsetHeight;
+  const geo = (lat,lon) => geoToCanvas(lat, lon, W(), H());
+
+  // Build polylines for each route
+  function buildPolyline(stops) {
+    return stops.map(s => geo(s.lat, s.lon));
+  }
+
+  // Create train/bus objects that travel along a polyline
+  function createVehicles(route, isBus) {
+    const pts = buildPolyline(isBus ? route.stops : route.stations);
+    const count = isBus ? route.busCount : route.trainCount;
+    const vehicles = [];
+    const totalLen = polylineLength(pts);
+    for (let i = 0; i < count; i++) {
+      vehicles.push({
+        t: (i / count) * totalLen, // stagger them evenly
+        dir: (i % 2 === 0) ? 1 : -1,
+        speed: route.speed * (0.85 + Math.random() * 0.3),
+        pulse: Math.random() * Math.PI * 2,
+        label: isBus ? route.line : route.lines[i % route.lines.length],
+        col: route.col,
+        pts,
+        totalLen,
+        isBus,
       });
     }
-  });
+    return vehicles;
+  }
 
-  function nycFrame() {
-    ctx.clearRect(0,0,W,H);
-    // Grid
-    ctx.strokeStyle='rgba(26,46,74,.2)'; ctx.lineWidth=1;
-    for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-    for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  function polylineLength(pts) {
+    let len = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i][0]-pts[i-1][0], dy = pts[i][1]-pts[i-1][1];
+      len += Math.sqrt(dx*dx+dy*dy);
+    }
+    return len;
+  }
 
-    // Subway lines as rough corridors
-    ctx.strokeStyle='rgba(26,46,74,.4)'; ctx.lineWidth=2;
-    [[W*.2,0,W*.2,H],[W*.4,0,W*.4,H],[W*.6,0,W*.6,H],[W*.8,0,W*.8,H],
-     [0,H*.25,W,H*.25],[0,H*.5,W,H*.5],[0,H*.75,W,H*.75]].forEach(([x1,y1,x2,y2])=>{
-      ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  function posAtDist(pts, d) {
+    let rem = d < 0 ? 0 : d;
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i][0]-pts[i-1][0], dy = pts[i][1]-pts[i-1][1];
+      const seg = Math.sqrt(dx*dx+dy*dy);
+      if (rem <= total + seg) {
+        const frac = seg > 0 ? (rem - total) / seg : 0;
+        return [pts[i-1][0]+dx*frac, pts[i-1][1]+dy*frac];
+      }
+      total += seg;
+    }
+    return pts[pts.length-1];
+  }
+
+  // Initialise all vehicles
+  const allVehicles = [];
+  SUBWAY_ROUTES.forEach(r => allVehicles.push(...createVehicles(r, false)));
+  BUS_ROUTES.forEach(r   => allVehicles.push(...createVehicles(r, true)));
+
+  // Build legend
+  const legendEl = document.getElementById('legend-items');
+  if (legendEl) {
+    legendEl.innerHTML = '';
+    [...SUBWAY_ROUTES.slice(0,8), ...BUS_ROUTES.slice(0,4)].forEach(r => {
+      const name = r.lines ? r.lines.join('/') : r.line;
+      legendEl.innerHTML += `<div style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${r.col};flex-shrink:0;box-shadow:0 0 5px ${r.col};"></span><span style="color:#7d93ad;font-size:10px;">${name}</span></div>`;
+    });
+  }
+
+  // NATS feed ticker
+  let feedIdx = 0;
+  setInterval(() => {
+    const el = document.getElementById('nyc-feed-ticker');
+    if (el) { el.textContent = FEED_MSGS[feedIdx % FEED_MSGS.length]; feedIdx++; }
+  }, 1800);
+
+  function drawFrame() {
+    const cw = W(), ch = H();
+    ctx.clearRect(0,0,cw,ch);
+
+    // Background gradient
+    const bg = ctx.createRadialGradient(cw*.4,ch*.35,0,cw*.5,ch*.5,cw*.8);
+    bg.addColorStop(0,'#080f22'); bg.addColorStop(1,'#020812');
+    ctx.fillStyle=bg; ctx.fillRect(0,0,cw,ch);
+
+    // Grid dots
+    ctx.fillStyle='rgba(26,46,74,.25)';
+    for(let x=0;x<cw;x+=20) for(let y=0;y<ch;y+=20) {
+      ctx.beginPath(); ctx.arc(x,y,0.6,0,Math.PI*2); ctx.fill();
+    }
+
+    // ── DRAW ROUTE TRACKS ──────────────────────────────────────────
+    SUBWAY_ROUTES.forEach(route => {
+      const pts = buildPolyline(route.stations);
+      ctx.beginPath();
+      pts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
+      ctx.strokeStyle = route.col + '44';
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+      // Bright inner line
+      ctx.beginPath();
+      pts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
+      ctx.strokeStyle = route.col + '99';
+      ctx.lineWidth = 1;
+      ctx.stroke();
     });
 
-    const t = Date.now();
-    NYC_LINES.forEach(line => {
-      line.trains.forEach(tr => {
-        tr.x += tr.vx; tr.y += tr.vy;
-        if(tr.x<20||tr.x>W-20) tr.vx*=-1;
-        if(tr.y<20||tr.y>H-20) tr.vy*=-1;
-        tr.pulse += 0.05;
+    BUS_ROUTES.forEach(route => {
+      const pts = buildPolyline(route.stops);
+      ctx.beginPath();
+      pts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
+      ctx.strokeStyle = route.col + '33';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4,4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    });
 
-        const pulse = Math.sin(tr.pulse)*0.5+0.5;
-        // Glow
-        const g = ctx.createRadialGradient(tr.x,tr.y,0,tr.x,tr.y,12+pulse*6);
-        g.addColorStop(0, line.col+'66'); g.addColorStop(1,'transparent');
-        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(tr.x,tr.y,18,0,Math.PI*2); ctx.fill();
-
-        // Dot
-        ctx.beginPath(); ctx.arc(tr.x,tr.y,5+pulse*2,0,Math.PI*2);
-        ctx.fillStyle=line.col; ctx.shadowColor=line.col; ctx.shadowBlur=8;
-        ctx.fill(); ctx.shadowBlur=0;
-
-        // Label
-        ctx.fillStyle='#fff'; ctx.font='bold 9px Inter,sans-serif';
-        ctx.textAlign='center'; ctx.textBaseline='middle';
-        ctx.fillText(line.name,tr.x,tr.y);
+    // ── STATION DOTS ───────────────────────────────────────────────
+    SUBWAY_ROUTES.forEach(route => {
+      buildPolyline(route.stations).forEach(([x,y]) => {
+        ctx.beginPath(); ctx.arc(x,y,2,0,Math.PI*2);
+        ctx.fillStyle = route.col + '88'; ctx.fill();
       });
     });
 
-    // Title
-    ctx.fillStyle='rgba(0,255,229,.7)'; ctx.font='bold 11px JetBrains Mono,monospace';
-    ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText(`NATS: tel.mta.subway.* | ${NYC_LINES.reduce((a,l)=>a+l.trains.length,0)} trains tracked live`, 14, 14);
+    // ── MAJOR STATION LABELS ───────────────────────────────────────
+    MAJOR_STATIONS.forEach(s => {
+      const [x,y] = geo(s.lat, s.lon);
+      ctx.beginPath(); ctx.arc(x,y,4,0,Math.PI*2);
+      ctx.fillStyle='rgba(255,255,255,.15)'; ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1; ctx.stroke();
+      ctx.fillStyle='rgba(200,220,255,.6)';
+      ctx.font='bold 8px Inter,sans-serif';
+      ctx.textAlign='center'; ctx.textBaseline='bottom';
+      ctx.fillText(s.n, x, y-5);
+    });
 
-    nycAnimId = requestAnimationFrame(nycFrame);
+    // ── BOROUGH LABELS ─────────────────────────────────────────────
+    BOROUGHS.forEach(b => {
+      const [x,y] = geo(b.lat,b.lon);
+      ctx.fillStyle='rgba(0,255,229,.08)';
+      ctx.font='900 20px Inter,sans-serif';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(b.n, x, y);
+    });
+
+    // ── MOVE & DRAW VEHICLES ───────────────────────────────────────
+    const now = Date.now();
+    let trainCount = 0, busCount = 0;
+
+    allVehicles.forEach(v => {
+      // Update position — rebuild pts from current canvas size
+      const pts = buildPolyline(
+        SUBWAY_ROUTES.find(r => r.col === v.col && !v.isBus)?.stations ||
+        BUS_ROUTES.find(r => r.col === v.col && v.isBus)?.stops ||
+        v.pts
+      ) || v.pts;
+
+      // Advance along path
+      v.t += v.speed * v.dir * (W() / 800) * 60; // normalize to canvas width
+      if (v.t >= v.totalLen) { v.t = v.totalLen; v.dir = -1; }
+      if (v.t <= 0)          { v.t = 0;           v.dir =  1; }
+
+      v.pulse += 0.04;
+      const [x, y] = posAtDist(pts, v.t);
+      const pulse = Math.sin(v.pulse) * 0.5 + 0.5;
+      const r = v.isBus ? 5 : 6;
+
+      // Glow halo
+      const grd = ctx.createRadialGradient(x,y,0,x,y,r*3+pulse*3);
+      grd.addColorStop(0, v.col + (v.isBus ? '55' : '66'));
+      grd.addColorStop(1, 'transparent');
+      ctx.fillStyle = grd;
+      ctx.beginPath(); ctx.arc(x,y,r*3+pulse*3,0,Math.PI*2); ctx.fill();
+
+      // Outer ring
+      ctx.beginPath(); ctx.arc(x,y,r+1,0,Math.PI*2);
+      ctx.strokeStyle = v.col; ctx.lineWidth = 1.5;
+      ctx.shadowColor = v.col; ctx.shadowBlur = 8;
+      ctx.stroke(); ctx.shadowBlur = 0;
+
+      // Filled dot
+      ctx.beginPath(); ctx.arc(x,y,r-1,0,Math.PI*2);
+      ctx.fillStyle = v.col;
+      ctx.shadowColor = v.col; ctx.shadowBlur = 6;
+      ctx.fill(); ctx.shadowBlur = 0;
+
+      // Label inside dot
+      ctx.fillStyle = '#000';
+      ctx.font = `bold ${v.isBus ? 6 : 7}px Inter,sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(v.label, x, y);
+
+      v.isBus ? busCount++ : trainCount++;
+    });
+
+    // ── STATS OVERLAY ──────────────────────────────────────────────
+    const statsEl = document.getElementById('nyc-stats');
+    if (statsEl) statsEl.textContent = `🚇 ${trainCount} trains · 🚌 ${busCount} buses`;
+
+    // Top-left NATS label
+    ctx.fillStyle='rgba(0,255,229,.5)';
+    ctx.font='bold 10px JetBrains Mono,monospace';
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText('NATS LIVE — tel.mta.*', 14, 14);
+
+    nycAnimId = requestAnimationFrame(drawFrame);
   }
-  nycFrame();
+  drawFrame();
 }
 
 // ── INIT ──────────────────────────────────────────────
