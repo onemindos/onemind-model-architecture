@@ -1139,24 +1139,33 @@ Result: intercept drone airborne
     <p>NYC generates open real-time data across transit, emergency, weather, and infrastructure. One Mind ingests all of it through NATS, rendering a live operating picture of New York City.</p>
   </div>
 
-  <!-- NYC MAP SIMULATION -->
-  <div style="position:relative;">
-    <canvas id="nyc-canvas" style="width:100%;height:640px;display:block;border-radius:16px;border:1px solid var(--border);background:#060f1e;"></canvas>
+  <!-- NYC MAP — Leaflet primary / canvas-grid fallback -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <div style="position:relative;border-radius:16px;overflow:hidden;border:1px solid var(--border);">
+    <!-- Leaflet map layer -->
+    <div id="nyc-map" style="width:100%;height:640px;background:#060f1e;"></div>
+    <!-- Canvas sits on top of Leaflet for animated trains/buses -->
+    <canvas id="nyc-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;border-radius:16px;"></canvas>
+
     <!-- Legend -->
-    <div id="nyc-legend" style="position:absolute;top:14px;right:14px;background:rgba(2,8,18,.88);border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:11px;font-family:'JetBrains Mono',monospace;backdrop-filter:blur(8px);max-width:200px;">
+    <div id="nyc-legend" style="position:absolute;top:14px;right:14px;z-index:1000;background:rgba(2,8,18,.92);border:1px solid var(--border);border-radius:10px;padding:10px 14px;font-size:11px;font-family:'JetBrains Mono',monospace;backdrop-filter:blur(8px);max-width:200px;">
       <div style="font-weight:700;color:var(--core);margin-bottom:8px;letter-spacing:1.5px;font-size:10px;">TRANSIT LEGEND</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;" id="legend-items"></div>
       <hr style="border:none;border-top:1px solid var(--border);margin:8px 0;">
       <div style="color:var(--muted);font-size:10px;" id="nyc-stats">Loading...</div>
+      <div id="nyc-map-mode" style="color:var(--muted2);font-size:9px;margin-top:4px;letter-spacing:.5px;">MAP: LOADING…</div>
     </div>
+
     <!-- NATS feed overlay -->
-    <div style="position:absolute;bottom:14px;left:14px;right:14px;background:rgba(2,8,18,.75);border:1px solid rgba(0,255,229,.15);border-radius:8px;padding:8px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;backdrop-filter:blur(6px);">
+    <div style="position:absolute;bottom:14px;left:14px;right:14px;z-index:1000;background:rgba(2,8,18,.80);border:1px solid rgba(0,255,229,.18);border-radius:8px;padding:8px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;backdrop-filter:blur(6px);">
       <span style="color:var(--core);">NATS ▶</span>
       <span id="nyc-feed-ticker" style="color:var(--muted);margin-left:8px;">tel.mta.subway.1.train_001 · {lat:40.7558,lon:-73.9870,speed:34,next:"Times Sq"}</span>
     </div>
   </div>
   <p style="text-align:center;font-size:11px;color:var(--muted2);margin-top:8px;font-family:'JetBrains Mono',monospace;">
-    Geographic NYC transit map — trains + buses riding real routes via GTFS-RT → NATS · Click any dot for NATS subject
+    Real NYC map (streets · Central Park · water) — trains + buses animated on actual GTFS route corridors via NATS
   </p>
 
   <hr class="divider">
@@ -2035,11 +2044,91 @@ const FEED_MSGS = [
   'tel.mta.subway.B.train_011 · {lat:40.8277,lon:-73.9256,speed:38,next:"Yankee Stadium"}',
 ];
 
-function initNYC() {
-  if (nycInit) return; nycInit = false; // allow re-init on resize
-  nycInit = true;
-  const C = document.getElementById('nyc-canvas');
-  if (!C) return;
+// ══════════════════════════════════════════════════════════════════
+// NYC MAP ENGINE — Leaflet primary, canvas-grid fallback
+// ══════════════════════════════════════════════════════════════════
+
+let leafletMap = null;   // Leaflet map instance (null = fallback mode)
+let usingLeaflet = false;
+
+// Convert lat/lon → canvas pixel coords
+// In Leaflet mode: use map.latLngToContainerPoint()
+// In fallback mode: use bounding-box projection
+function latLonToCanvas(lat, lon, C) {
+  if (usingLeaflet && leafletMap) {
+    const pt = leafletMap.latLngToContainerPoint([lat, lon]);
+    return [pt.x, pt.y];
+  }
+  return geoToCanvas(lat, lon, C.offsetWidth, C.offsetHeight);
+}
+
+// ── SHARED VEHICLE ENGINE ─────────────────────────────────────────
+function polylineLength(pts) {
+  let len = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i][0]-pts[i-1][0], dy = pts[i][1]-pts[i-1][1];
+    len += Math.sqrt(dx*dx+dy*dy);
+  }
+  return len;
+}
+
+function posAtDist(pts, d) {
+  let rem = Math.max(0, d);
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i][0]-pts[i-1][0], dy = pts[i][1]-pts[i-1][1];
+    const seg = Math.sqrt(dx*dx+dy*dy);
+    if (rem <= total + seg) {
+      const frac = seg > 0 ? (rem - total) / seg : 0;
+      return [pts[i-1][0]+dx*frac, pts[i-1][1]+dy*frac];
+    }
+    total += seg;
+  }
+  return pts[pts.length-1];
+}
+
+function createVehicles(route, isBus, C) {
+  const stops = isBus ? route.stops : route.stations;
+  const pts = stops.map(s => latLonToCanvas(s.lat, s.lon, C));
+  const count = isBus ? route.busCount : route.trainCount;
+  const totalLen = polylineLength(pts);
+  const vehicles = [];
+  for (let i = 0; i < count; i++) {
+    vehicles.push({
+      t: (i / count) * totalLen,
+      dir: (i % 2 === 0) ? 1 : -1,
+      speed: route.speed * (0.85 + Math.random() * 0.3),
+      pulse: Math.random() * Math.PI * 2,
+      label: isBus ? route.line : route.lines[i % route.lines.length],
+      col: route.col,
+      isBus,
+      stops,     // raw lat/lon stops — reproject each frame
+      totalLen,
+    });
+  }
+  return vehicles;
+}
+
+function buildLegend() {
+  const el = document.getElementById('legend-items');
+  if (!el) return;
+  el.innerHTML = '';
+  [...SUBWAY_ROUTES.slice(0,8), ...BUS_ROUTES.slice(0,4)].forEach(r => {
+    const name = r.lines ? r.lines.join('/') : r.line;
+    el.innerHTML += `<div style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:10px;height:10px;border-radius:${r.lines?'2px':'50%'};background:${r.col};flex-shrink:0;box-shadow:0 0 4px ${r.col};"></span><span style="color:#7d93ad;font-size:10px;">${name}</span></div>`;
+  });
+}
+
+function startFeedTicker() {
+  let idx = 0;
+  setInterval(() => {
+    const el = document.getElementById('nyc-feed-ticker');
+    if (el) { el.textContent = FEED_MSGS[idx % FEED_MSGS.length]; idx++; }
+  }, 1800);
+}
+
+// ── CANVAS DRAW ENGINE (runs over both Leaflet and fallback) ───────
+function startCanvasAnimation(C, allVehicles, fallbackMode) {
   const ctx = C.getContext('2d');
 
   function resize() {
@@ -2049,220 +2138,333 @@ function initNYC() {
     ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
   }
   resize();
-  window.addEventListener('resize', () => { resize(); });
+  window.addEventListener('resize', resize);
 
-  const W = () => C.offsetWidth;
-  const H = () => C.offsetHeight;
-  const geo = (lat,lon) => geoToCanvas(lat, lon, W(), H());
+  function drawFallbackBase() {
+    // ── CANVAS-GRID BASE MAP (fallback only) ─────────────────────
+    const cw = C.offsetWidth, ch = C.offsetHeight;
 
-  // Build polylines for each route
-  function buildPolyline(stops) {
-    return stops.map(s => geo(s.lat, s.lon));
-  }
+    // Background
+    const bg = ctx.createLinearGradient(0,0,cw,ch);
+    bg.addColorStop(0,'#060e1f'); bg.addColorStop(1,'#020810');
+    ctx.fillStyle = bg; ctx.fillRect(0,0,cw,ch);
 
-  // Create train/bus objects that travel along a polyline
-  function createVehicles(route, isBus) {
-    const pts = buildPolyline(isBus ? route.stops : route.stations);
-    const count = isBus ? route.busCount : route.trainCount;
-    const vehicles = [];
-    const totalLen = polylineLength(pts);
-    for (let i = 0; i < count; i++) {
-      vehicles.push({
-        t: (i / count) * totalLen, // stagger them evenly
-        dir: (i % 2 === 0) ? 1 : -1,
-        speed: route.speed * (0.85 + Math.random() * 0.3),
-        pulse: Math.random() * Math.PI * 2,
-        label: isBus ? route.line : route.lines[i % route.lines.length],
-        col: route.col,
-        pts,
-        totalLen,
-        isBus,
-      });
+    // Water bodies (Hudson River left edge, East River right of Manhattan)
+    ctx.fillStyle = 'rgba(0,60,120,.35)';
+    // Hudson — left strip
+    const [hx] = latLonToCanvas(40.77, -74.018, C);
+    ctx.fillRect(0, 0, Math.max(0, hx), ch);
+    // East River — strip right of Manhattan
+    const [ex] = latLonToCanvas(40.77, -73.972, C);
+    const [ex2] = latLonToCanvas(40.77, -73.955, C);
+    ctx.fillRect(ex, 0, ex2 - ex, ch);
+
+    // Upper NY Bay (south of Manhattan)
+    const [,bY] = latLonToCanvas(40.695, -74.01, C);
+    if (bY < ch) {
+      ctx.fillStyle = 'rgba(0,60,120,.35)';
+      ctx.fillRect(0, bY, cw, ch - bY);
     }
-    return vehicles;
-  }
-
-  function polylineLength(pts) {
-    let len = 0;
-    for (let i = 1; i < pts.length; i++) {
-      const dx = pts[i][0]-pts[i-1][0], dy = pts[i][1]-pts[i-1][1];
-      len += Math.sqrt(dx*dx+dy*dy);
-    }
-    return len;
-  }
-
-  function posAtDist(pts, d) {
-    let rem = d < 0 ? 0 : d;
-    let total = 0;
-    for (let i = 1; i < pts.length; i++) {
-      const dx = pts[i][0]-pts[i-1][0], dy = pts[i][1]-pts[i-1][1];
-      const seg = Math.sqrt(dx*dx+dy*dy);
-      if (rem <= total + seg) {
-        const frac = seg > 0 ? (rem - total) / seg : 0;
-        return [pts[i-1][0]+dx*frac, pts[i-1][1]+dy*frac];
-      }
-      total += seg;
-    }
-    return pts[pts.length-1];
-  }
-
-  // Initialise all vehicles
-  const allVehicles = [];
-  SUBWAY_ROUTES.forEach(r => allVehicles.push(...createVehicles(r, false)));
-  BUS_ROUTES.forEach(r   => allVehicles.push(...createVehicles(r, true)));
-
-  // Build legend
-  const legendEl = document.getElementById('legend-items');
-  if (legendEl) {
-    legendEl.innerHTML = '';
-    [...SUBWAY_ROUTES.slice(0,8), ...BUS_ROUTES.slice(0,4)].forEach(r => {
-      const name = r.lines ? r.lines.join('/') : r.line;
-      legendEl.innerHTML += `<div style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${r.col};flex-shrink:0;box-shadow:0 0 5px ${r.col};"></span><span style="color:#7d93ad;font-size:10px;">${name}</span></div>`;
-    });
-  }
-
-  // NATS feed ticker
-  let feedIdx = 0;
-  setInterval(() => {
-    const el = document.getElementById('nyc-feed-ticker');
-    if (el) { el.textContent = FEED_MSGS[feedIdx % FEED_MSGS.length]; feedIdx++; }
-  }, 1800);
-
-  function drawFrame() {
-    const cw = W(), ch = H();
-    ctx.clearRect(0,0,cw,ch);
-
-    // Background gradient
-    const bg = ctx.createRadialGradient(cw*.4,ch*.35,0,cw*.5,ch*.5,cw*.8);
-    bg.addColorStop(0,'#080f22'); bg.addColorStop(1,'#020812');
-    ctx.fillStyle=bg; ctx.fillRect(0,0,cw,ch);
 
     // Grid dots
-    ctx.fillStyle='rgba(26,46,74,.25)';
+    ctx.fillStyle = 'rgba(26,46,74,.3)';
     for(let x=0;x<cw;x+=20) for(let y=0;y<ch;y+=20) {
-      ctx.beginPath(); ctx.arc(x,y,0.6,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x,y,0.5,0,Math.PI*2); ctx.fill();
     }
 
-    // ── DRAW ROUTE TRACKS ──────────────────────────────────────────
-    SUBWAY_ROUTES.forEach(route => {
-      const pts = buildPolyline(route.stations);
-      ctx.beginPath();
-      pts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
-      ctx.strokeStyle = route.col + '44';
-      ctx.lineWidth = 2.5;
-      ctx.lineJoin = 'round';
-      ctx.stroke();
-      // Bright inner line
-      ctx.beginPath();
-      pts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
-      ctx.strokeStyle = route.col + '99';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    });
+    // Manhattan outline (approximate polygon)
+    const mhPts = [
+      [40.7018,-74.0135],[40.7042,-74.0163],[40.7098,-74.0160],
+      [40.7133,-74.0085],[40.7200,-74.0049],[40.7326,-74.0029],
+      [40.7401,-74.0026],[40.7556,-73.9870],[40.7634,-73.9777],
+      [40.7760,-73.9810],[40.8000,-73.9580],[40.8154,-73.9527],
+      [40.8280,-73.9441],[40.8498,-73.9357],[40.8560,-73.9290],
+      [40.8760,-73.9120],[40.8778,-73.9002],[40.8690,-73.8975],
+      [40.8560,-73.9200],[40.8280,-73.9300],[40.7920,-73.9500],
+      [40.7700,-73.9810],[40.7556,-73.9870],[40.7354,-73.9896],
+      [40.7133,-73.9940],[40.7072,-74.0020],[40.7018,-74.0135],
+    ].map(([la,lo]) => latLonToCanvas(la, lo, C));
 
-    BUS_ROUTES.forEach(route => {
-      const pts = buildPolyline(route.stops);
+    ctx.beginPath();
+    mhPts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(10,22,44,.7)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(30,60,100,.6)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Central Park rectangle
+    const [cpX1,cpY1] = latLonToCanvas(40.7968,-73.9582,C);
+    const [cpX2,cpY2] = latLonToCanvas(40.7640,-73.9730,C);
+    ctx.fillStyle = 'rgba(0,80,30,.45)';
+    ctx.strokeStyle = 'rgba(0,160,60,.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.rect(Math.min(cpX1,cpX2), Math.min(cpY1,cpY2),
+             Math.abs(cpX2-cpX1), Math.abs(cpY2-cpY1));
+    ctx.fill(); ctx.stroke();
+    // Label
+    const cpMx = (cpX1+cpX2)/2, cpMy = (cpY1+cpY2)/2;
+    ctx.fillStyle = 'rgba(0,200,60,.5)';
+    ctx.font = 'bold 9px Inter,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('Central Park', cpMx, cpMy);
+
+    // Prospect Park (Brooklyn)
+    const [ppX1,ppY1] = latLonToCanvas(40.6640,-73.9720,C);
+    const [ppX2,ppY2] = latLonToCanvas(40.6560,-73.9640,C);
+    if (ppY1 < ch && ppX1 > 0) {
+      ctx.fillStyle = 'rgba(0,70,20,.4)';
+      ctx.beginPath();
+      ctx.rect(Math.min(ppX1,ppX2), Math.min(ppY1,ppY2),
+               Math.abs(ppX2-ppX1), Math.abs(ppY2-ppY1));
+      ctx.fill();
+      ctx.fillStyle = 'rgba(0,160,40,.35)';
+      ctx.font = '8px Inter,sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Prospect Park', (ppX1+ppX2)/2, (ppY1+ppY2)/2);
+    }
+
+    // Borough labels (ghost)
+    BOROUGHS.forEach(b => {
+      const [x,y] = latLonToCanvas(b.lat, b.lon, C);
+      if (x > 0 && x < cw && y > 0 && y < ch) {
+        ctx.fillStyle = 'rgba(0,255,229,.07)';
+        ctx.font = '900 18px Inter,sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(b.n, x, y);
+      }
+    });
+  }
+
+  function drawRoutes() {
+    // Subway route tracks
+    SUBWAY_ROUTES.forEach(route => {
+      const pts = route.stations.map(s => latLonToCanvas(s.lat, s.lon, C));
+      // Outer glow
       ctx.beginPath();
       pts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
       ctx.strokeStyle = route.col + '33';
+      ctx.lineWidth = 5;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+      // Main line
+      ctx.beginPath();
+      pts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
+      ctx.strokeStyle = route.col + 'bb';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    });
+
+    // Bus routes (dashed)
+    BUS_ROUTES.forEach(route => {
+      const pts = route.stops.map(s => latLonToCanvas(s.lat, s.lon, C));
+      ctx.beginPath();
+      pts.forEach(([x,y],i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
+      ctx.strokeStyle = route.col + '55';
       ctx.lineWidth = 1.2;
-      ctx.setLineDash([4,4]);
+      ctx.setLineDash([5,5]);
       ctx.stroke();
       ctx.setLineDash([]);
     });
 
-    // ── STATION DOTS ───────────────────────────────────────────────
+    // Station dots
     SUBWAY_ROUTES.forEach(route => {
-      buildPolyline(route.stations).forEach(([x,y]) => {
-        ctx.beginPath(); ctx.arc(x,y,2,0,Math.PI*2);
-        ctx.fillStyle = route.col + '88'; ctx.fill();
+      route.stations.map(s => latLonToCanvas(s.lat, s.lon, C)).forEach(([x,y]) => {
+        ctx.beginPath(); ctx.arc(x,y,1.5,0,Math.PI*2);
+        ctx.fillStyle = route.col + '99'; ctx.fill();
       });
     });
 
-    // ── MAJOR STATION LABELS ───────────────────────────────────────
-    MAJOR_STATIONS.forEach(s => {
-      const [x,y] = geo(s.lat, s.lon);
-      ctx.beginPath(); ctx.arc(x,y,4,0,Math.PI*2);
-      ctx.fillStyle='rgba(255,255,255,.15)'; ctx.fill();
-      ctx.strokeStyle='rgba(255,255,255,.3)'; ctx.lineWidth=1; ctx.stroke();
-      ctx.fillStyle='rgba(200,220,255,.6)';
-      ctx.font='bold 8px Inter,sans-serif';
-      ctx.textAlign='center'; ctx.textBaseline='bottom';
-      ctx.fillText(s.n, x, y-5);
-    });
+    // Major station labels (only in fallback — Leaflet has its own labels)
+    if (fallbackMode) {
+      MAJOR_STATIONS.forEach(s => {
+        const [x,y] = latLonToCanvas(s.lat, s.lon, C);
+        ctx.beginPath(); ctx.arc(x,y,3.5,0,Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth=.8; ctx.stroke();
+        ctx.fillStyle = 'rgba(180,210,255,.6)';
+        ctx.font = '7px Inter,sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillText(s.n, x, y-4);
+      });
+    }
+  }
 
-    // ── BOROUGH LABELS ─────────────────────────────────────────────
-    BOROUGHS.forEach(b => {
-      const [x,y] = geo(b.lat,b.lon);
-      ctx.fillStyle='rgba(0,255,229,.08)';
-      ctx.font='900 20px Inter,sans-serif';
-      ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText(b.n, x, y);
-    });
-
-    // ── MOVE & DRAW VEHICLES ───────────────────────────────────────
-    const now = Date.now();
+  function drawVehicles() {
     let trainCount = 0, busCount = 0;
-
     allVehicles.forEach(v => {
-      // Update position — rebuild pts from current canvas size
-      const pts = buildPolyline(
-        SUBWAY_ROUTES.find(r => r.col === v.col && !v.isBus)?.stations ||
-        BUS_ROUTES.find(r => r.col === v.col && v.isBus)?.stops ||
-        v.pts
-      ) || v.pts;
+      // Reproject stops to canvas each frame (handles map pan/zoom)
+      const pts = v.stops.map(s => latLonToCanvas(s.lat, s.lon, C));
+      const totalLen = polylineLength(pts);
 
-      // Advance along path
-      v.t += v.speed * v.dir * (W() / 800) * 60; // normalize to canvas width
-      if (v.t >= v.totalLen) { v.t = v.totalLen; v.dir = -1; }
-      if (v.t <= 0)          { v.t = 0;           v.dir =  1; }
-
+      v.t += v.speed * v.dir * (C.offsetWidth / 800) * 60;
+      if (v.t >= totalLen) { v.t = totalLen; v.dir = -1; }
+      if (v.t <= 0)        { v.t = 0;        v.dir =  1; }
       v.pulse += 0.04;
+
       const [x, y] = posAtDist(pts, v.t);
-      const pulse = Math.sin(v.pulse) * 0.5 + 0.5;
-      const r = v.isBus ? 5 : 6;
+      const pulse  = Math.sin(v.pulse) * 0.5 + 0.5;
+      const r      = v.isBus ? 5 : 6;
 
       // Glow halo
       const grd = ctx.createRadialGradient(x,y,0,x,y,r*3+pulse*3);
-      grd.addColorStop(0, v.col + (v.isBus ? '55' : '66'));
+      grd.addColorStop(0, v.col + (v.isBus ? '44' : '55'));
       grd.addColorStop(1, 'transparent');
       ctx.fillStyle = grd;
       ctx.beginPath(); ctx.arc(x,y,r*3+pulse*3,0,Math.PI*2); ctx.fill();
 
       // Outer ring
       ctx.beginPath(); ctx.arc(x,y,r+1,0,Math.PI*2);
-      ctx.strokeStyle = v.col; ctx.lineWidth = 1.5;
-      ctx.shadowColor = v.col; ctx.shadowBlur = 8;
-      ctx.stroke(); ctx.shadowBlur = 0;
+      ctx.strokeStyle = v.col;
+      ctx.lineWidth   = 1.5;
+      ctx.shadowColor = v.col;
+      ctx.shadowBlur  = 10;
+      ctx.stroke();
+      ctx.shadowBlur  = 0;
 
       // Filled dot
       ctx.beginPath(); ctx.arc(x,y,r-1,0,Math.PI*2);
-      ctx.fillStyle = v.col;
-      ctx.shadowColor = v.col; ctx.shadowBlur = 6;
-      ctx.fill(); ctx.shadowBlur = 0;
+      ctx.fillStyle   = v.col;
+      ctx.shadowColor = v.col;
+      ctx.shadowBlur  = 7;
+      ctx.fill();
+      ctx.shadowBlur  = 0;
 
-      // Label inside dot
-      ctx.fillStyle = '#000';
-      ctx.font = `bold ${v.isBus ? 6 : 7}px Inter,sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      // Line label
+      ctx.fillStyle      = '#000';
+      ctx.font           = `bold ${v.isBus ? 6 : 7}px Inter,sans-serif`;
+      ctx.textAlign      = 'center';
+      ctx.textBaseline   = 'middle';
       ctx.fillText(v.label, x, y);
 
       v.isBus ? busCount++ : trainCount++;
     });
 
-    // ── STATS OVERLAY ──────────────────────────────────────────────
     const statsEl = document.getElementById('nyc-stats');
     if (statsEl) statsEl.textContent = `🚇 ${trainCount} trains · 🚌 ${busCount} buses`;
+  }
 
-    // Top-left NATS label
-    ctx.fillStyle='rgba(0,255,229,.5)';
-    ctx.font='bold 10px JetBrains Mono,monospace';
-    ctx.textAlign='left'; ctx.textBaseline='top';
-    ctx.fillText('NATS LIVE — tel.mta.*', 14, 14);
+  function drawFrame() {
+    const cw = C.offsetWidth, ch = C.offsetHeight;
+    ctx.clearRect(0, 0, cw, ch);
+
+    if (fallbackMode) drawFallbackBase();
+
+    drawRoutes();
+    drawVehicles();
+
+    if (!fallbackMode) {
+      // Subtle NATS watermark over the real map
+      ctx.fillStyle = 'rgba(0,255,229,.35)';
+      ctx.font = 'bold 10px JetBrains Mono,monospace';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('NATS LIVE — tel.mta.*', 14, 14);
+    }
 
     nycAnimId = requestAnimationFrame(drawFrame);
   }
   drawFrame();
+}
+
+// ── MAIN ENTRY POINT ─────────────────────────────────────────────
+function initNYC() {
+  if (nycInit) return;
+  nycInit = true;
+
+  const C = document.getElementById('nyc-canvas');
+  if (!C) return;
+
+  buildLegend();
+  startFeedTicker();
+
+  // Try Leaflet first — dark OSM tile layer
+  function tryLeaflet() {
+    if (typeof L === 'undefined') return false;
+    const mapDiv = document.getElementById('nyc-map');
+    if (!mapDiv) return false;
+
+    try {
+      leafletMap = L.map('nyc-map', {
+        center: [40.73, -73.97],
+        zoom: 12,
+        zoomControl: true,
+        attributionControl: true,
+        scrollWheelZoom: true,
+      });
+
+      // Dark Carto tile layer — looks great with neon overlays
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/">Carto</a>',
+        subdomains: 'abcd',
+        maxZoom: 20,
+      }).addTo(leafletMap);
+
+      usingLeaflet = true;
+
+      const modeEl = document.getElementById('nyc-map-mode');
+      if (modeEl) modeEl.textContent = 'MAP: OSM STREETS ✓';
+
+      // Wait for map to be ready, then init canvas overlay
+      leafletMap.whenReady(() => {
+        // Sync canvas size with map container
+        const syncSize = () => {
+          C.style.width  = mapDiv.offsetWidth  + 'px';
+          C.style.height = mapDiv.offsetHeight + 'px';
+        };
+        syncSize();
+        leafletMap.on('resize move zoom', syncSize);
+
+        // Init all vehicles with map projection
+        const allVehicles = [];
+        SUBWAY_ROUTES.forEach(r => allVehicles.push(...createVehicles(r, false, C)));
+        BUS_ROUTES.forEach(r   => allVehicles.push(...createVehicles(r, true,  C)));
+        startCanvasAnimation(C, allVehicles, false);
+      });
+
+      return true;
+    } catch(e) {
+      console.warn('Leaflet init failed:', e);
+      return false;
+    }
+  }
+
+  function fallbackCanvas() {
+    // Hide the Leaflet div — canvas takes over full space
+    const mapDiv = document.getElementById('nyc-map');
+    if (mapDiv) mapDiv.style.display = 'none';
+    C.style.position = 'relative';
+    C.style.display  = 'block';
+    C.style.width    = '100%';
+    C.style.height   = '640px';
+
+    const modeEl = document.getElementById('nyc-map-mode');
+    if (modeEl) modeEl.textContent = 'MAP: CANVAS GRID (offline)';
+
+    const allVehicles = [];
+    SUBWAY_ROUTES.forEach(r => allVehicles.push(...createVehicles(r, false, C)));
+    BUS_ROUTES.forEach(r   => allVehicles.push(...createVehicles(r, true,  C)));
+    startCanvasAnimation(C, allVehicles, true);
+  }
+
+  // Leaflet loads asynchronously — wait up to 3 s then fall back
+  if (typeof L !== 'undefined') {
+    if (!tryLeaflet()) fallbackCanvas();
+  } else {
+    // Script might still be loading
+    let waited = 0;
+    const interval = setInterval(() => {
+      waited += 200;
+      if (typeof L !== 'undefined') {
+        clearInterval(interval);
+        if (!tryLeaflet()) fallbackCanvas();
+      } else if (waited >= 3000) {
+        clearInterval(interval);
+        fallbackCanvas();
+      }
+    }, 200);
+  }
 }
 
 // ── INIT ──────────────────────────────────────────────
